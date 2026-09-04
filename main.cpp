@@ -6,6 +6,18 @@
 #include "codes.h"
 
 WiFiClientSecure client;
+
+//HARDWARE
+const int REVERSE = 27;
+const int PAUSE = 25; 
+const int NEXT = 32;
+const int VOLUME = 34;
+
+int potVal = 0;
+int potValDiff = 0;
+
+int StateChangeDetection = HIGH;
+
 //API
 const char* host = "api.spotify.com";
 const char* token_host = "accounts.spotify.com";
@@ -14,9 +26,11 @@ const int httpsPort = 443;
 unsigned long lastTokenTime = 0;
 const unsigned long tokenExpireTime = 3500000;
 
+bool isPLaying = true;
+
 String access_token = "";
 
-String mainDevice = "device_name";
+String mainDevice = "DESKTOP-NLK6KKA";
 
 //SONG DATA
 String songRuntime;
@@ -24,17 +38,19 @@ String song;
 String albumCover;
 
 bool ensureSecureConnection(const char* targetHost) {
-    if (WiFi.status() != WL_CONNECTED) return false;
-    
-    if (client.connected()) {
-        return true; 
-    }
-    
-    client.setTimeout(5000);
-    
-    if (!client.connect(targetHost, httpsPort)) {
+    if (WiFi.status() != WL_CONNECTED) {
         return false;
     }
+
+    client.stop();
+
+    client.setTimeout(3000);
+
+    if (!client.connect(targetHost, httpsPort)) {
+        Serial.println("HTTPS connection failed");
+        return false;
+    }
+
     return true;
 }
 
@@ -107,6 +123,8 @@ String getDevice(){
     DynamicJsonDocument doc(256);
     DeserializationError error = deserializeJson(doc, client, DeserializationOption::Filter(filter));
     
+    client.stop();
+
     if (error) {
         Serial.println("Failed to parse JSON for device");
         return "";
@@ -146,6 +164,7 @@ void getSongData(){
     filter["item"]["name"] = true;
     filter["item"]["duration_ms"] = true;
     filter["item"]["album"]["images"][0]["url"] = true;
+    filter["item"]["duration_ms"] = true;
 
     DynamicJsonDocument doc(1024);
     DeserializationError error = deserializeJson(doc, client, DeserializationOption::Filter(filter));
@@ -177,6 +196,10 @@ void getSongData(){
 
     //ALBUM COVER
     albumCover = doc["item"]["album"]["images"][0]["url"].as<String>();
+
+    //PLAYBACK STATE
+    isPLaying = doc["is_playing"] | false;
+
     }
 
 void commandSend(const char* endpoint, const char* method = "POST"){
@@ -203,6 +226,10 @@ void setup() {
     Serial.begin(115200);
     delay(100);
 
+    pinMode(REVERSE, INPUT_PULLUP);
+    pinMode(PAUSE, INPUT_PULLUP);
+    pinMode(NEXT, INPUT_PULLUP);
+
     Serial.println("");
     Serial.print("Attempting to connect to SSID: ");
     Serial.println(ssid);
@@ -222,6 +249,62 @@ void setup() {
     Serial.println(WiFi.localIP());
 
     access_token = getAccessToken();
+    getSongData();
+    Serial.println(song);
+    Serial.println(songRuntime);
+    Serial.println(albumCover);
+    Serial.println(isPLaying);
+}  
+
+
+void loop(){
+    potVal = round(analogRead(VOLUME)/40.95);
+    int reverseState = digitalRead(REVERSE);
+    int pauseState = digitalRead(PAUSE);
+    int nextState = digitalRead(NEXT);
+
+    if (reverseState == LOW && StateChangeDetection == HIGH) {
+        Serial.println("REVERSE");
+        commandSend("v1/me/player/previous");
+        getSongData();
+        StateChangeDetection = LOW;
+    } 
+    else if (pauseState == LOW && StateChangeDetection == HIGH) {
+        Serial.println("PAUSE/PLAY");
+        if (isPLaying) {
+            commandSend("v1/me/player/pause", "PUT");
+        } else {
+            commandSend("v1/me/player/play", "PUT");
+        }
+
+        StateChangeDetection = LOW;
+    } 
+    else if (nextState == LOW && StateChangeDetection == HIGH) {
+        Serial.println("NEXT");
+        commandSend("v1/me/player/next");
+        getSongData();
+        StateChangeDetection = LOW;
+    }
+    else if (reverseState == HIGH && pauseState == HIGH && nextState == HIGH ){
+        StateChangeDetection = HIGH;
+    }
+
+
+    if (potVal != potValDiff && potValDiff != 0){
+        String command = "v1/me/player/volume?volume_percent=" + String(potVal);
+        commandSend(command.c_str(), "PUT");
+    }
+    
+  
+    potValDiff = potVal;
+    delay(150);
+    if (millis() - lastTokenTime >= tokenExpireTime) {
+        access_token = getAccessToken();
+        lastTokenTime = millis();
+    }
+}
+
+
 
     //Active functions
 
@@ -243,14 +326,4 @@ void setup() {
     // getSongData();
 
     //Get Device
-    // getDevice();A
-}   
-
-void loop(){
-
-    if (millis() - lastTokenTime >= tokenExpireTime) {
-        Serial.println("NEW TOKEN");
-        lastTokenTime = millis();
-    }
-}
-
+    // getDevice();
