@@ -3,9 +3,22 @@
 #include <ArduinoJson.h>
 #include <WiFiClientSecure.h>
 
+#include <SPI.h>
 #include "codes.h"
 
-WiFiClientSecure client;
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
+
+#include <SD.h>
+#include "FS.h"
+
+//SCREEN
+#define TFT_DC   12
+#define TFT_RST  13
+
+#define TFT_CS   -1
+
+Adafruit_ILI9341 tft(TFT_CS, TFT_DC, TFT_RST);
 
 //HARDWARE
 const int REVERSE = 27;
@@ -18,6 +31,8 @@ int potValDiff = 0;
 
 int StateChangeDetection = HIGH;
 
+const int SdCsPin = 5;
+
 //API
 const char* host = "api.spotify.com";
 const char* token_host = "accounts.spotify.com";
@@ -27,6 +42,8 @@ unsigned long lastTokenTime = 0;
 const unsigned long tokenExpireTime = 3500000;
 
 bool isPLaying = true;
+
+WiFiClientSecure client;
 
 String access_token = "";
 
@@ -70,6 +87,7 @@ String getAccessToken() {
     client.println("Connection: close");
     client.println();
     client.print(body);
+    
 
     unsigned long timeout = millis() + 5000;
     while (client.connected() && millis()< timeout){
@@ -198,9 +216,8 @@ void getSongData(){
     albumCover = doc["item"]["album"]["images"][0]["url"].as<String>();
 
     //PLAYBACK STATE
-    isPLaying = doc["is_playing"] | false;
-
-    }
+    // isPLaying = doc["is_playing"];
+}
 
 void commandSend(const char* endpoint, const char* method = "POST"){
     if (!ensureSecureConnection(host)) return;
@@ -226,10 +243,28 @@ void setup() {
     Serial.begin(115200);
     delay(100);
 
+    //HARDWARE
     pinMode(REVERSE, INPUT_PULLUP);
     pinMode(PAUSE, INPUT_PULLUP);
     pinMode(NEXT, INPUT_PULLUP);
+    pinMode(SdCsPin, OUTPUT);
 
+      if (!SD.begin(SdCsPin)) {
+    Serial.println("SD Card Mount Failed");
+    }else{
+        Serial.println("SD Card Mounted");
+    }
+
+    // TFT SCREEN
+    tft.begin();
+    tft.setTextSize(1);
+    tft.setRotation(2);
+    tft.fillScreen(ILI9341_BLACK);
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setCursor(20, 20);
+    tft.println("LOADING");
+
+    //WIFI
     Serial.println("");
     Serial.print("Attempting to connect to SSID: ");
     Serial.println(ssid);
@@ -248,12 +283,16 @@ void setup() {
 
     Serial.println(WiFi.localIP());
 
+    //API
     access_token = getAccessToken();
     getSongData();
     Serial.println(song);
     Serial.println(songRuntime);
     Serial.println(albumCover);
     Serial.println(isPLaying);
+
+    tft.fillScreen(ILI9341_BLACK);
+    tft.println(song);
 }  
 
 
@@ -265,6 +304,7 @@ void loop(){
 
     if (reverseState == LOW && StateChangeDetection == HIGH) {
         Serial.println("REVERSE");
+        isPLaying = true;
         commandSend("v1/me/player/previous");
         getSongData();
         StateChangeDetection = LOW;
@@ -272,15 +312,21 @@ void loop(){
     else if (pauseState == LOW && StateChangeDetection == HIGH) {
         Serial.println("PAUSE/PLAY");
         if (isPLaying) {
+            isPLaying = false;
             commandSend("v1/me/player/pause", "PUT");
+            Serial.print(isPLaying);
         } else {
+            isPLaying = true;
             commandSend("v1/me/player/play", "PUT");
+            Serial.print(isPLaying);
+
         }
 
         StateChangeDetection = LOW;
     } 
     else if (nextState == LOW && StateChangeDetection == HIGH) {
         Serial.println("NEXT");
+        isPLaying = true;
         commandSend("v1/me/player/next");
         getSongData();
         StateChangeDetection = LOW;
@@ -291,6 +337,7 @@ void loop(){
 
 
     if (potVal != potValDiff && potValDiff != 0){
+        Serial.println(potVal);
         String command = "v1/me/player/volume?volume_percent=" + String(potVal);
         commandSend(command.c_str(), "PUT");
     }
@@ -327,3 +374,15 @@ void loop(){
 
     //Get Device
     // getDevice();
+
+
+    //     TFT             ESP32
+    // ----------------------
+    // GND      --->   GND
+    // VCC      --->   3.3V
+    // CLK      --->   GPIO18
+    // MOSI     --->   GPIO23
+    // RES      --->   GPIO27
+    // DC       --->   GPIO26
+    // BLK      --->   3.3V
+    // MISO     --->   GPIO19
