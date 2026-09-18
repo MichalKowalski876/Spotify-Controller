@@ -7,11 +7,10 @@
 #include "codes.h"
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
-#include <SD.h>
-#include "FS.h"
 #include <TJpg_Decoder.h>
 #include <SPIFFS.h>
 #include <HTTPClient.h>
+#include <tft_eSPI.h>
 
 //SCREEN
 #define TFT_DC   12
@@ -32,7 +31,6 @@ int potValDiff = 0;
 
 int StateChangeDetection = HIGH;
 
-const int SdCsPin = 5;
 
 //API
 const char* host = "api.spotify.com";
@@ -65,6 +63,14 @@ const char *imagePath ="/album.jpg";
 String songRuntime;
 String song;
 String albumCover;
+
+//COLROS 
+#define GRAY tft.color565(18, 18, 18)
+#define GREEN tft.color565(30, 215,96)
+#define WHITE tft.color565(248, 248, 248)
+#define LIGHT_GRAY tft.color565(53, 53, 53)
+
+
 
 bool ensureSecureConnection(const char* targetHost) {
     if (WiFi.status() != WL_CONNECTED) {
@@ -209,6 +215,11 @@ void getSongData(){
 
     song = artist + " - " + title;
 
+    if (song.length() >=37){
+        song = song.substring(0, 37) + "...";
+    }
+
+
     //RUNTIME 
     int songRuntimeMs = doc["item"]["duration_ms"];
     int songRuntimeMin = songRuntimeMs / 60000;
@@ -249,32 +260,30 @@ void commandSend(const char* endpoint, const char* method = "POST"){
     }
 }
 
-bool jpgCallback(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap){
+bool jpgCallback(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
+    int max_by = (y + h > srcH) ? (srcH - y) : h;
+    int max_bx = (x + w > srcW) ? (srcW - x) : w;
 
-    for (int by =0; by < h; by++){
-        int originalY = y + by;
-        if (originalY >= srcH){
-          continue;
-        }
+    if (max_bx <= 0 || max_by <= 0) return true;
 
-        int newY = (originalY * dstH) / srcH;
-        if (newY >= dstH){
-            continue;
-        }
+    int16_t newX_map[16]; 
+    for (int bx = 0; bx < max_bx; bx++) {
+        newX_map[bx] = ((x + bx) * dstW) / srcW;
+    }
 
-        for (int bx = 0; bx < w; bx++){
-            int originalX = x + bx;
-            if(originalX >= srcW){
-                continue;
-            }
+    for (int by = 0; by < max_by; by++) {
+        int newY = ((y + by) * dstH) / srcH;
+        if (newY >= dstH) break; 
+        
+        int screenY = imageY + newY;
+        
+        uint16_t* srcRow = &bitmap[by * w]; 
 
-            int newX = (originalX * dstW) / srcW;
-            if(newX >= dstW){
-                continue;
-            }
-            uint16_t pixelColor = bitmap[bx + by * w];
+        for (int bx = 0; bx < max_bx; bx++) {
+            int mappedX = newX_map[bx];
+            if (mappedX >= dstW) break; 
 
-            tft.drawPixel(imageX + newX, imageY + newY, pixelColor);
+            tft.drawPixel(imageX + mappedX, screenY, srcRow[bx]);
         }
     }
     return true;
@@ -327,10 +336,90 @@ bool downloadImage(){
     return totalBytes > 0;
 }
 
-void tempSongDisplay(){
-    tft.setCursor(10, 240);
-    tft.println(song);
+void pauseButton(){
+    tft.fillRect(111, 270, 23, 28, GRAY);
+
+    if (isPLaying){
+        tft.fillRect(111, 270, 8, 26, WHITE);
+        tft.fillRect(125, 270, 8, 26, WHITE);
+    } else {
+        tft.fillTriangle (111, 270, 111, 296, 133, 283, WHITE);
+    }
 }
+
+void nextButton(){
+    if (StateChangeDetection == HIGH){
+        tft.fillTriangle(150, 296, 150, 270, 172, 283, WHITE);
+        tft.fillRect(172, 270, 8, 26, WHITE);
+    }else{
+        tft.fillTriangle(150, 296, 150, 270, 172, 283, GREEN);
+        tft.fillRect(172, 270, 8, 26, GREEN);
+    }
+}  
+
+void prevButton(){
+    if (StateChangeDetection == HIGH){
+        tft.fillTriangle(86, 270, 86, 296, 64, 283, WHITE);
+        tft.fillRect(57, 270, 8, 26, WHITE);
+    }else{
+        tft.fillTriangle(86, 270, 86, 296, 64, 283, GREEN);
+        tft.fillRect(57, 270, 8, 26, GREEN);
+    }
+}
+
+void progressBar(){
+    tft.drawRect(56, 256, 170, 5, WHITE);
+}
+
+void battryBar(){
+    tft.drawRect(10, 304, 100, 5, WHITE);
+    tft.setCursor(22,311);
+    tft.print("BATTERY: ");
+    tft.print("100");
+    tft.print("%");
+}   
+
+void volumeBar(){
+    tft.drawRect(130, 304, 100, 5, WHITE);
+    tft.setCursor(144, 311);
+    tft.fillRect(190, 310, 30, 10, GRAY);
+    tft.print("VOLUME: ");
+    tft.print(potVal);
+    tft.print("%");
+
+    if (potVal > potValDiff) {
+    tft.fillRect(131, 305, potVal-2, 3, GREEN);
+    } else{
+        tft.fillRect(228, 305, potVal-98, 3, GRAY);
+    }
+}
+
+
+void SongDisplay(){
+    tft.fillRect(0, 0, 240, 255, GRAY);
+    tft.fillRect(0, 255, 55, 6, GRAY);
+
+    tft.setCursor(0, 240);
+    tft.println(song);
+    progressBar();
+
+    tft.setCursor(0, 255);
+    tft.print(songRuntime);
+    tft.print("/0:00");
+
+    bool download = downloadImage();
+    if (!download){
+        Serial.println("Image failed to download");
+    } else {
+        TJpgDec.drawFsJpg(imageX, imageY, imagePath);
+    }
+
+    if (SPIFFS.exists(imagePath)){
+        SPIFFS.remove(imagePath);
+        Serial.println("temporary jpg deleted");
+    }
+}
+
 
 
 void setup() {
@@ -348,6 +437,7 @@ void setup() {
     tft.setRotation(4);
     tft.setTextColor(ILI9341_WHITE);
     tft.setCursor(60, 140);
+    tft.fillScreen(GRAY);
     tft.println("LOADING");
     tft.setTextSize(1);
 
@@ -375,33 +465,33 @@ void setup() {
 
     access_token = getAccessToken();
     Serial.println(access_token);
-    getSongData();    
+    getSongData();
+    tft.setCursor(60, 180);    
+    tft.println("Access token recieved");
 
     //SPIFF
     if(!SPIFFS.begin(true)){
         Serial.println("SPIFFS failed");
     }
-    tft.fillScreen(ILI9341_BLACK);
+    tft.fillScreen(GRAY);
 
     TJpgDec.setJpgScale(1);
     TJpgDec.setSwapBytes(false);
-    TJpgDec.setCallback(jpgCallback);
-
-    bool download = downloadImage();
-    if (!download){
-        Serial.println("Image failed to download");
-    } else {
-        TJpgDec.drawFsJpg(imageX, imageY, imagePath);
-    }
-
-    if (SPIFFS.exists(imagePath)){
-        SPIFFS.remove(imagePath);
-        Serial.println("temporary jpg deleted");
-    }
+    TJpgDec.setCallback(jpgCallback);   
+    tft.setCursor(70, 190);    
+    tft.println("SPIFFS initialized");
 
     Serial.println(song);
     Serial.println(albumCover);
-    tempSongDisplay();
+
+    battryBar();
+    volumeBar();
+
+    pauseButton();
+    nextButton();
+    prevButton();
+
+    SongDisplay();
 }  
 
 
@@ -412,12 +502,13 @@ void loop(){
     int nextState = digitalRead(NEXT);
 
     if (reverseState == LOW && StateChangeDetection == HIGH) {
+        StateChangeDetection = LOW;
         Serial.println("REVERSE");
+        prevButton();
         isPLaying = true;
         commandSend("v1/me/player/previous");
         getSongData();
-        tempSongDisplay();
-        StateChangeDetection = LOW;
+        SongDisplay();
     } 
     else if (pauseState == LOW && StateChangeDetection == HIGH) {
         Serial.println("PAUSE/PLAY");
@@ -428,26 +519,30 @@ void loop(){
             isPLaying = true;
             commandSend("v1/me/player/play", "PUT");
         }
-
+        pauseButton();
         StateChangeDetection = LOW;
     } 
     else if (nextState == LOW && StateChangeDetection == HIGH) {
+        StateChangeDetection = LOW;
         Serial.println("NEXT");
+        nextButton();
         isPLaying = true;
         commandSend("v1/me/player/next");
         getSongData();
-        tempSongDisplay();
-        StateChangeDetection = LOW;
+        SongDisplay();
     }
     else if (reverseState == HIGH && pauseState == HIGH && nextState == HIGH ){
         StateChangeDetection = HIGH;
+        nextButton();
+
     }
 
 
-    if (potVal != potValDiff && potValDiff != 0){
+    if (potVal != potValDiff && potValDiff != 0 && abs(potValDiff - potVal) > 2){
         Serial.println(potVal);
-        // String command = "v1/me/player/volume?volume_percent=" + String(potVal);
-        // commandSend(command.c_str(), "PUT");
+        String command = "v1/me/player/volume?volume_percent=" + String(potVal);
+        commandSend(command.c_str(), "PUT");
+        volumeBar();
     }
     
   
@@ -494,31 +589,3 @@ void loop(){
 // DC       --->   GPIO26
 // BLK      --->   3.3V
 // MISO     --->   GPIO19
-
-
-
-
-
-
-
-
-
-
-// #include <SD.h>
-// #include "FS.h"
-// #include <Arduino.h>
-// const int SdCsPin = 5;
-
-// void setup(){
-//     Serial.begin(115200);
-//     pinMode(SdCsPin, OUTPUT);
-
-
-//       if (!SD.begin(SdCsPin)) {
-//     Serial.println("SD Card Mount Failed");
-//     }else{
-//         Serial.println("SD Card Mounted");
-//     }
-// }
-
-// void loop(){}
